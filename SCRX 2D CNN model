@@ -1,0 +1,130 @@
+from __future__ import print_function
+import keras
+from keras.layers import Conv2D, MaxPooling2D, Input, concatenate, BatchNormalization
+from keras import backend as K
+from keras.utils import multi_gpu_model
+from keras import layers
+import h5py
+from keras.models import Model
+import threading
+from keras.utils.io_utils import HDF5Matrix
+from keras.utils import plot_model
+
+data_format = 'channels_first'
+nClasses = 14
+
+
+def l2_loss(y_true, y_pred):
+    alpha = 0.001
+    loss = (K.sum((y_pred-y_true)**2)/2)*alpha
+    return loss
+
+
+def residual_block(y, nb_channels_out):
+    shortcut = y
+    in_channel = K.shape(y)[1]
+    y = layers.Activation('relu')(y)
+    y = layers.Conv2D(nb_channels_out, kernel_size=(3, 3), use_bias=True,
+                      strides=(1, 1), padding='same', data_format=data_format)(y)
+    y = layers.BatchNormalization()(y)
+    y = layers.Activation('relu')(y)
+    y = layers.Conv2D(nb_channels_out, kernel_size=(3, 3), use_bias=True,
+                      strides=(1, 1), padding='same', data_format=data_format)(y)
+    y = layers.BatchNormalization()(y)
+    if in_channel != nb_channels_out:
+        shortcut = layers.Conv2D(nb_channels_out, kernel_size=(1, 1), use_bias=True,
+                                     strides=(1, 1), padding='same', data_format=data_format)(shortcut)
+        shortcut = layers.BatchNormalization()(shortcut)
+        in_channel = nb_channels_out
+    y = layers.add([shortcut, y])
+    y = layers.Activation('relu')(y)
+    return y
+
+
+# CNN
+entrada = Input(shape=(3+nClasses, 128, 256))
+x = residual_block(entrada, 128)
+x = MaxPooling2D(pool_size=(2, 2))(x)
+x = residual_block(x, 64)
+x = MaxPooling2D(pool_size=(2, 2))(x)
+x = residual_block(x, 32)
+x = residual_block(x, 16)
+x = Conv2D(1, 3, strides=(1, 1), use_bias=True, activation='sigmoid', padding='same', data_format=data_format)(x)
+
+x2 = Conv2D(128, 3, bias=True, strides=(1, 1), activation='relu', padding='same', data_format=data_format)(entrada)
+x2 = BatchNormalization()(x2)
+x2 = MaxPooling2D(pool_size=(2, 2))(x2)
+x2 = Conv2D(63, 3, bias=True, strides=(1, 1), activation='relu', padding='same', data_format=data_format)(x2)
+x2 = BatchNormalization()(x2)
+x2 = MaxPooling2D(pool_size=(2, 2))(x2)
+x2 = concatenate([x, x2], axis=1)
+x2 = Conv2D(1, 3, bias=True, activation='sigmoid', data_format=data_format)(x2)
+
+model = Model(inputs=entrada, outputs=x2)
+model = multi_gpu_model(model, gpus=2)
+model.compile(loss=l2_loss, optimizer=keras.optimizers.SGD(lr=0.001))
+model.summary()
+plot_model(model, to_file='model.png', show_shapes=True)
+
+class threadsafe_iter:
+    """Takes an iterator/generator and makes it thread-safe by
+    serializing call to the `next` method of given iterator/generator.
+    """
+
+    def __init__(self, it):
+        self.it = it
+        self.lock = threading.Lock()
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        with self.lock:
+            return self.it.__next__()
+
+
+def threadsafe_generator(f):
+    """A decorator that takes a generator function and makes it thread-safe.
+    """
+
+    def g(*a, **kw):
+        return threadsafe_iter(f(*a, **kw))
+
+    return g
+
+
+def generator(hdf5_file, batch_size):
+    x = HDF5Matrix(hdf5_file, 'traincolor')
+    size = x.end
+    y = HDF5Matrix(hdf5_file, 'traint')
+    idx = 0
+    while True:
+        last_batch = idx + batch_size > size
+        end = idx + batch_size if not last_batch else size
+        yield x[idx:end], y[idx:end]
+        idx = end if not last_batch else 0
+
+
+def data_statistic(train_dataset):
+    train_x = HDF5Matrix(train_dataset, 'traincolor')
+    return train_x.end
+
+
+batch_size = 87
+train_dataset = '/home/cic2017/PycharmProjects/Depth_with_seg/Dataset/dataset.hdf5'
+train_generator = generator(train_dataset, batch_size)
+nb_train_samples = data_statistic(train_dataset)
+print('train samples: %d' % nb_train_samples)
+
+model.fit_generator(
+    epochs=100,
+    generator=train_generator, steps_per_epoch=nb_train_samples // batch_size,
+    max_queue_size=10,  # use a value which can fit batch_size * image_size * max_queue_size in your CPU memory
+    workers=1,  # I don't see multi workers can have any performance benefit without multi threading
+    use_multiprocessing=False,  # HDF5Matrix cannot support multi-threads
+    shuffle=False)  # you cannot shuffle on a HDF5Matrix, so make sure you shuffle the data before save to h5 file
+
+model_json = model.to_json()
+with open('model.json', 'w') as json_file:
+    json_file.write(model_json)
+model.save_weights('RNA.h5')
