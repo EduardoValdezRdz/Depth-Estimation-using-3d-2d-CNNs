@@ -1,0 +1,563 @@
+from __future__ import print_function
+from random import shuffle
+import glob
+import numpy as np
+import cv2
+import h5py
+from PIL import Image
+import keras
+import cv2
+from keras.models import model_from_json
+from skimage import io
+import mxnet as mx
+from keras import backend as K
+
+print(mx.__version__)
+print(keras.__version__)
+shuffle_data = True  # shuffle the addresses before saving
+images_test_root = '/synthia_new/test/*' #Path to test datset
+addrs = glob.glob(images_test_root)
+
+full_data_depth = []
+for i in addrs:
+    a = i+'/Depth/*.png'
+    addrs_depth = glob.glob(a)
+    for x in addrs_depth:
+        full_data_depth.append(x)
+
+full_data_rgb = []
+for i in addrs:
+    a = i+'/RGB/*.png'
+    addrs_rgb = glob.glob(a)
+    for x in addrs_rgb:
+        full_data_rgb.append(x)
+
+full_data_seg = []
+for i in addrs:
+    a = i+'/SemSeg/*.png'
+    addrs_seg = glob.glob(a)
+    for x in addrs_seg:
+        full_data_seg.append(x)
+
+# tamanos de imagen
+sia = 192
+sib = 320
+sta = 184
+stb = 312
+
+full_data_depth.sort()
+print(len(full_data_depth))
+
+full_data_rgb.sort()
+print(len(full_data_rgb))
+
+full_data_seg.sort()
+print(len(full_data_seg))
+
+test_addrscolor = full_data_rgb[0:int(1 * len(full_data_depth))]
+test_addrslabels = full_data_seg[0:int(1 * len(full_data_depth))]
+test_addrsdepth = full_data_depth[0:int(1 * len(full_data_depth))]
+
+nclases = 14
+
+
+def one_hot_it(labels):
+    x = np.zeros((sia, sib, nclases))
+    for i in range(sia):
+        for j in range(sib):
+            x[i, j, labels[i][j]] = 1
+    return x
+
+
+"""
+Labels
+
+Label	-> Name		->   RGB
+---------------------
+        0	-> Void		->   0,0,0
+        1	-> Road		->   128,64,128
+        2	-> Sidewalk	->   244,35,232
+        3	-> Building	->   70,70,70
+        4	-> Wall		->   102,102,156
+        5	-> Fence	->   190,153,153
+        6	-> Pole		->   153,153,153
+        7	-> Traffic Light->   250,170,30
+        8	-> Traffic Sign	->   220,220,0
+        9	-> Vegetation	->   107,142,35
+        10	-> Terrain	->   152,251,152
+        11	-> Sky		->   70,130,180
+        12	-> Person	->   220,20,60
+        13	-> Rider	->   255,0,0
+        14	-> Car		->   0,0,142
+        15	-> Truck	->   0,0,70
+        16	-> Bus		->   0,60,100
+        17	-> Train	->   0,80,100
+        18	-> Motorcycle	->   0,0,230
+        19	-> Bicycle	->   119,11,32
+        20	-> Road Lines	->   157.234,50
+        21	-> Other	->   72,0,98
+        22	-> Road Works	->   167,106,29
+"""
+
+#Load weights from semantic segmentation network 
+json_file_u = open('model16C.json', 'r')
+loaded_model_json_u = json_file_u.read()
+json_file_u.close()
+loaded_model_u = model_from_json(loaded_model_json_u)
+loaded_model_u.load_weights("RNA16C.h5")
+print("Loaded model from disk")
+loaded_model_u.compile(loss="binary_crossentropy", optimizer=keras.optimizers.SGD(lr=0.001))
+
+#Load weights from depth estimation network 
+json_file = open('modeld4c.json', 'r')
+loaded_model_json = json_file.read()
+json_file.close()
+loaded_model = model_from_json(loaded_model_json)
+loaded_model.load_weights("RNAd4c.h5")
+print("Loaded model from disk")
+loaded_model.compile(loss="binary_crossentropy", optimizer=keras.optimizers.SGD(lr=0.001))
+
+def color_map(x):
+    dummy = np.zeros((192, 320, 3), dtype=np.uint8)
+    for i in range(192):
+        for j in range(320):
+            if x[0, i, j] == 0:
+                dummy[i, j, 0] = 0
+                dummy[i, j, 1] = 0
+                dummy[i, j, 2] = 0
+
+            if x[0, i, j] == 1:
+                dummy[i, j, 0] = 0
+                dummy[i, j, 1] = 0
+                dummy[i, j, 2] = 255
+
+            if x[0, i, j] == 2:
+                dummy[i, j, 0] = 0
+                dummy[i, j, 1] = 255
+                dummy[i, j, 2] = 0
+
+            if x[0, i, j] == 3:
+                dummy[i, j, 0] = 255
+                dummy[i, j, 1] = 0
+                dummy[i, j, 2] = 0
+
+            if x[0, i, j] == 4:
+                dummy[i, j, 0] = 255
+                dummy[i, j, 1] = 255
+                dummy[i, j, 2] = 0
+
+            if x[0, i, j] == 5:
+                dummy[i, j, 0] = 255
+                dummy[i, j, 1] = 0
+                dummy[i, j, 2] = 255
+
+            if x[0, i, j] == 6:
+                dummy[i, j, 0] = 100
+                dummy[i, j, 1] = 0
+                dummy[i, j, 2] = 200
+
+            if x[0, i, j] == 7:
+                dummy[i, j, 0] = 200
+                dummy[i, j, 1] = 200
+                dummy[i, j, 2] = 200
+
+            if x[0, i, j] == 8:
+                dummy[i, j, 0] = 255
+                dummy[i, j, 1] = 125
+                dummy[i, j, 2] = 0
+
+            if x[0, i, j] == 9:
+                dummy[i, j, 0] = 220
+                dummy[i, j, 1] = 20
+                dummy[i, j, 2] = 60
+
+            if x[0, i, j] == 10:
+                dummy[i, j, 0] = 14
+                dummy[i, j, 1] = 16
+                dummy[i, j, 2] = 20
+
+            if x[0, i, j] == 11:
+                dummy[i, j, 0] = 44
+                dummy[i, j, 1] = 56
+                dummy[i, j, 2] = 220
+
+            if x[0, i, j] == 12:
+                dummy[i, j, 0] = 255
+                dummy[i, j, 1] = 255
+                dummy[i, j, 2] = 255
+
+            if x[0, i, j] == 13:
+                dummy[i, j, 0] = 144
+                dummy[i, j, 1] = 56
+                dummy[i, j, 2] = 20
+    return dummy
+
+
+def proceesar_rgb(ruta_rgb):
+    imgd = Image.open(ruta_rgb)  # Replace with your image name here
+    imgd = np.array(imgd)
+    imgd = cv2.resize(imgd, (sib, sia))
+    max_val = float(np.iinfo(imgd.dtype).max)
+    imgd = imgd/max_val
+    imgd = imgd.astype('float32')
+    auxd = np.zeros((sia, sib, 3), np.float32)
+    auxd[:, :, :] = imgd[:, :, 0:3]
+    #cv2.imshow('test1', auxd)
+    auxd = np.transpose(auxd, (2, 0, 1))
+    return auxd
+
+
+def procesar_etiquetas2(ruta_imagen, ruta_rgb):
+    labelt = cv2.imread(ruta_imagen, cv2.IMREAD_UNCHANGED)
+    labelt = cv2.resize(labelt, (sib, sia))
+    labelt = labelt.astype('int')
+    auxtc = np.zeros((sia, sib, 1), 'int')
+    auxtc[:, :, 0] = labelt[:, :, 2]
+    labeln = np.zeros((sia, sib))
+    for l in range(labelt.shape[0]):
+        for j in range(labelt.shape[1]):
+            # void
+            if auxtc[l, j, 0] == 21:
+                labeln[l, j] = 0
+
+            elif auxtc[l, j, 0] == 22:
+                labeln[l, j] = 0
+
+            elif auxtc[l, j, 0] > 20:
+                labeln[l, j] = 0
+
+            # sky
+            elif auxtc[l, j, 0] == 11:
+                labeln[l, j] = 1
+
+            # building
+            elif auxtc[l, j, 0] == 3:
+                labeln[l, j] = 2
+
+            elif auxtc[l, j, 0] == 4:
+                labeln[l, j] = 2
+
+            # road
+            elif auxtc[l, j, 0] == 1:
+                labeln[l, j] = 3
+            elif auxtc[l, j, 0] == 10:
+                labeln[l, j] = 3
+
+            # sidewalk
+            elif auxtc[l, j, 0] == 2:
+                labeln[l, j] = 4
+
+            # fence
+            elif auxtc[l, j, 0] == 5:
+                labeln[l, j] = 5
+
+            # vegetation
+            elif auxtc[l, j, 0] == 9:
+                labeln[l, j] = 6
+
+            # pole
+            elif auxtc[l, j, 0] == 6:
+                labeln[l, j] = 7
+
+            # vehicle
+            elif auxtc[l, j, 0] == 14:
+                labeln[l, j] = 8
+            elif auxtc[l, j, 0] == 15:
+                labeln[l, j] = 8
+            elif auxtc[l, j, 0] == 16:
+                labeln[l, j] = 8
+            elif auxtc[l, j, 0] == 17:
+                labeln[l, j] = 8
+
+            # sign
+            elif auxtc[l, j, 0] == 8:
+                labeln[l, j] = 9
+
+            # pedestrian
+            elif auxtc[l, j, 0] == 12:
+                labeln[l, j] = 10
+
+            # cyclist
+            elif auxtc[l, j, 0] == 13:
+                labeln[l, j] = 11
+            elif auxtc[l, j, 0] == 18:
+                labeln[l, j] = 11
+            elif auxtc[l, j, 0] == 19:
+                labeln[l, j] = 11
+
+            # lanemrk
+            elif auxtc[l, j, 0] == 20:
+                labeln[l, j] = 12
+
+            # trafficlight
+            elif auxtc[l, j, 0] == 7:
+                labeln[l, j] = 13
+
+            else:
+                labeln[l, j] = labeln[l, j]
+
+    labeln = labeln.astype('int')
+    test = one_hot_it(labeln)
+    return test
+
+
+def procesar_etiquetas(ruta_imagen, ruta_rgb):
+    imgd = Image.open(ruta_rgb)  # Replace with your image name here
+    imgd = np.array(imgd)
+    imgd = cv2.resize(imgd, (sib, sia))
+    max_val = float(np.iinfo(imgd.dtype).max)
+    imgd = imgd/max_val
+    imgd = imgd.astype('float32')
+    auxd = np.zeros((nclases+3, sia, sib, 1), np.float32)
+    auxd[0, :, :, 0] = imgd[:, :, 0]
+    auxd[1, :, :, 0] = imgd[:, :, 1]
+    auxd[2, :, :, 0] = imgd[:, :, 2]
+    rgbaux = np.zeros((1, 3, sia, sib))
+    rgbaux[0, 0, :, :] = imgd[:, :, 0]
+    rgbaux[0, 1, :, :] = imgd[:, :, 1]
+    rgbaux[0, 2, :, :] = imgd[:, :, 2]
+    score_u = loaded_model_u.predict(rgbaux)
+    score_u = np.transpose(score_u, (0, 2, 3, 1))
+    K.clear_session()
+    score_u[score_u < 0.5] = 0
+    score_u[score_u > 0.5] = 1
+    for i in range(0, nclases):
+        auxd[3+i, :, :, 0] = score_u[0, :, :, i]
+    cv2.imshow('test1', score_u[0, :, :, 3])
+    #cv2.imshow('test2', auxd[4, :, :, :])
+    #cv2.imshow('test3', auxd[2, :, :, :])
+    #cv2.imshow('test4', auxd[3, :, :, :])
+    cv2.waitKey(0)
+    onehot = np.transpose(auxd, (3, 0, 1, 2))
+    return onehot
+
+
+def procesar_deph(ruta_depth):
+    imgdc = cv2.imread(ruta_depth, cv2.IMREAD_UNCHANGED)
+    depth = 5000 * ((imgdc[:, :, 1] + imgdc[:, :, 0] * 256 + imgdc[:, :, 2] * 256 * 256) / float(256*256*256 - 1))
+    imgdc = cv2.resize(depth, (stb, sta))
+    imgdc[imgdc > 1] = 1
+    imgdc  = 1 - imgdc
+    auxdc = np.zeros((1, sta, stb, 1), np.float32)
+    auxdc[0, :, :, 0] = imgdc[:, :]
+    auxdc = np.transpose(auxdc, (3, 0, 1, 2))
+    return auxdc
+
+
+def data_statistic(train_dataset):
+    len(train_dataset)
+    return len(train_dataset)
+
+
+#Errores
+def rms(pred, target):
+    dif = (target-pred) ** 2
+    prom = np.mean(dif)
+    res = np.sqrt(prom)
+    return res
+
+
+def ecm(pred, target):
+    dif = (target-pred) ** 2
+    dif = np.absolute(dif)
+    res = np.mean(dif)
+    return res
+
+
+def rms_log(pred, target):
+    pred[pred <= 0] = 0
+    target[target <= 0] = 0
+    a = np.log10(target)
+    b = np.log10(pred)
+    a[a == -np.inf] = 0
+    b[b == -np.inf] = 0
+    dif = a-b
+    difpos = dif**2
+    resm = np.mean(difpos)
+    res = np.sqrt(resm)
+    return res
+
+
+def rms_logsi(pred, target):
+    pred[pred <= 0] = 0
+    target[target <= 0] = 0
+    a = np.log10(target)
+    b = np.log10(pred)
+    a[a == -np.inf] = 0
+    b[b == -np.inf] = 0
+    dif = a-b
+    difpos = np.absolute(dif)
+    res = np.mean(difpos)
+    return res
+
+
+def abssqu(pred, target):
+    pred[pred < 0] = 0
+    target[target < 0] = 0
+    dif = (target-pred) ** 2
+    dif2 = np.divide(dif, pred)
+    prom = np.mean(dif2)
+    prom = np.nan_to_num(prom)
+    return prom
+
+
+def absrel(pred, target):
+    pred[pred < 0] = 0
+    target[target < 0] = 0
+    dif = (target-pred)
+    dif = np.absolute(dif)
+    dif = np.divide(dif, pred)
+    res = np.mean(dif)
+    res = np.nan_to_num(res)
+    return res
+
+
+def tresh1(pred, target):
+    pred[pred < 0] = 0
+    target[target < 0] = 0
+    maxa1 = np.divide(target, pred)
+    maxa2 = np.divide(pred, target)
+    max = np.maximum(maxa1, maxa2)
+    max[max > 1.25] = 0
+    count = np.count_nonzero(max)
+    sig = float(count)/(sia*sib)
+    return sig
+
+
+def tresh2(pred, target):
+    pred[pred < 0] = 0
+    target[target < 0] = 0
+    maxa1 = np.divide(target, pred)
+    maxa2 = np.divide(pred, target)
+    max = np.maximum(maxa1, maxa2)
+    max[max > 1.25**2] = 0
+    count = np.count_nonzero(max)
+    sig = float(count)/(sia*sib)
+    return sig
+
+
+def tresh3(pred, target):
+    pred[pred < 0] = 0
+    target[target < 0] = 0
+    maxa1 = np.divide(target, pred)
+    maxa2 = np.divide(pred, target)
+    max = np.maximum(maxa1, maxa2)
+    max[max > 1.25**3] = 0
+    count = np.count_nonzero(max)
+    sig = float(count)/(sia*sib)
+    return sig
+
+
+batch_size = 5
+nb_train_samples = data_statistic(test_addrscolor)
+print('train samples: %d' % nb_train_samples)
+
+
+ni = nb_train_samples
+
+listrms = np.zeros((ni, 1), np.float32)
+listecm = np.zeros((ni, 1), np.float32)
+listlog = np.zeros((ni, 1), np.float32)
+listlogi = np.zeros((ni, 1), np.float32)
+listabsq = np.zeros((ni, 1), np.float32)
+listabsr = np.zeros((ni, 1), np.float32)
+listtresh1 = np.zeros((ni, 1), np.float32)
+listtresh2 = np.zeros((ni, 1), np.float32)
+listtresh3 = np.zeros((ni, 1), np.float32)
+
+#Loop for testing and saving the resulting images from the network
+for i in range(0, nb_train_samples):
+    rgbaux = np.zeros((1, 1, 3+nclases, sia, sib))
+    depthaux = np.zeros((1, 1, 1, sta, stb))
+    addr_rgb = test_addrscolor[i]
+    addr_labels = test_addrslabels[i]
+    addr_depth = test_addrsdepth[i]
+    rgb = procesar_etiquetas(addr_labels, addr_rgb)
+    depth = procesar_deph(addr_depth)
+    rgbaux[0] = rgb
+    depthaux[0] = depth
+    depthaux = np.transpose(depthaux, (0, 1, 3, 4, 2))
+    score = loaded_model.predict(rgbaux)
+    K.clear_session()
+    score = np.transpose(score, (0, 1, 3, 4, 2))
+    score = cv2.resize(score[0, 0, :, :, 0], (stb, sta))
+    seg = np.zeros((1, 14, 192, 320), np.float32)
+    seg[0, :, :, :] = rgbaux[0, 0, 3:17, :, :]
+    seg = np.transpose(seg, (0, 2, 3, 1))
+    segtrue = procesar_etiquetas2(addr_labels, addr_rgb)
+    seg2 = np.zeros((1, 192, 320, 14), np.float32)
+    seg2[0, :, :, :] = segtrue
+    rgbw = np.transpose(rgbaux, (0, 1, 3, 4, 2))
+    rgbw1 = rgbw[0, 0, :, :, 0:3]
+    u = '{0:0{width}}'.format(i, width=6)
+    ruta = 'resultados/' + str(u) + '.png'
+    ruta2 = 'originales/' + str(u) + '.png'
+    ruta3 = 'rgb/' + str(u) + '.png'
+    ruta4 = 'colormap/' + str(u) + '.png'
+    ruta5 = 'colormaptrue/' + str(u) + '.png'
+    x = score
+    x[x < 0] = 0
+    x[x > 1] = 1
+    y = depthaux[0, 0, :, :, 0]
+    ut = np.argmax(seg2, axis=3)
+    dummy = color_map(ut)
+    um = np.argmax(seg, axis=3)
+    dummy2 = color_map(um)
+    #io.imsave(ruta, x)
+    #io.imsave(ruta2, y)
+    #io.imsave(ruta3, rgbw1)
+    #io.imsave(ruta4, dummy2)
+    #io.imsave(ruta5, dummy)
+    cv2.imshow('test', x)
+    cv2.imshow('rgb', rgbw1)
+    #cv2.imshow('test1', y)
+    cv2.waitKey(0)
+    listrms[i] = rms(x, y)
+    listecm[i] = ecm(x, y)
+    listlog[i] = rms_log(x, y)
+    listlogi[i] = rms_logsi(x, y)
+    listabsr[i] = absrel(x, y)
+    listabsq[i] = abssqu(x, y)
+    listtresh1[i] = tresh1(x, y)
+    listtresh2[i] = tresh2(x, y)
+    listtresh3[i] = tresh3(x, y)
+
+rmsg = np.zeros((1, 1), np.float32)
+ecmg = np.zeros((1, 1), np.float32)
+rmslogg = np.zeros((1, 1), np.float32)
+rmslogig = np.zeros((1, 1), np.float32)
+absqg = np.zeros((1, 1), np.float32)
+absrg = np.zeros((1, 1), np.float32)
+tresh1g = np.zeros((1, 1), np.float32)
+tresh2g = np.zeros((1, 1), np.float32)
+tresh3g = np.zeros((1, 1), np.float32)
+
+rmsg[0] = np.mean(listrms)
+ecmg[0] = np.mean(listecm)
+rmslogg[0] = np.mean(listlog)
+rmslogig[0] = np.mean(listlogi)
+absqg[0] = np.mean(listabsq)
+absrg[0] = np.mean(listabsr)
+tresh1g[0] = np.mean(listtresh1)
+tresh2g[0] = np.mean(listtresh2)
+tresh3g[0] = np.mean(listtresh3)
+
+np.savetxt('errores_synthia/rms.txt', listrms, fmt='%1.4f')
+np.savetxt('errores_synthia/ecm.txt', listecm, fmt='%1.4f')
+np.savetxt('errores_synthia/log.txt', listlog, fmt='%1.4f')
+np.savetxt('errores_synthia/logi.txt', listlogi, fmt='%1.4f')
+np.savetxt('errores_synthia/absq.txt', listabsq, fmt='%1.4f')
+np.savetxt('errores_synthia/absr.txt', listabsr, fmt='%1.4f')
+np.savetxt('errores_synthia/tresh1.txt', listtresh1, fmt='%1.4f')
+np.savetxt('errores_synthia/tresh2.txt', listtresh2, fmt='%1.4f')
+np.savetxt('errores_synthia/tresh3.txt', listtresh3, fmt='%1.4f')
+
+np.savetxt('errores_synthia/rmsg.txt', rmsg, fmt='%1.4f')
+np.savetxt('errores_synthia/ecmg.txt', ecmg, fmt='%1.4f')
+np.savetxt('errores_synthia/logg.txt', rmslogg, fmt='%1.4f')
+np.savetxt('errores_synthia/logig.txt', rmslogig, fmt='%1.4f')
+np.savetxt('errores_synthia/absqg.txt', absqg, fmt='%1.4f')
+np.savetxt('errores_synthia/absrg.txt', absrg, fmt='%1.4f')
+np.savetxt('errores_synthia/treshg1.txt', tresh1g, fmt='%1.4f')
+np.savetxt('errores_synthia/treshg2.txt', tresh2g, fmt='%1.4f')
+np.savetxt('errores_synthia/treshg3.txt', tresh3g, fmt='%1.4f')
