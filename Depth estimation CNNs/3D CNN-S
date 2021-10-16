@@ -1,0 +1,334 @@
+from __future__ import print_function
+from random import shuffle
+import glob
+import numpy as np
+import cv2
+import h5py
+from keras import backend as K
+from PIL import Image
+import os
+import random
+import keras
+from keras.utils import multi_gpu_model
+from keras import layers
+import h5py
+from keras.models import Model
+from keras.layers import Input, MaxPooling2D, MaxPooling3D, BatchNormalization
+from keras.layers.convolutional import Conv2D, Conv2DTranspose, Conv3D
+from keras.layers.merge import concatenate
+import threading
+from keras.utils import plot_model
+import cv2
+
+shuffle_data = True  # shuffle the addresses before saving
+images_train_root = '/synthia_new/train/*'#Path of training images
+addrs = glob.glob(images_train_root)
+
+full_data_depth = []
+for i in addrs:
+    a = i+'/Depth/*.png'
+    addrs_depth = glob.glob(a)
+    for x in addrs_depth:
+        full_data_depth.append(x)
+
+full_data_rgb = []
+for i in addrs:
+    a = i+'/RGB/*.png'
+    addrs_rgb = glob.glob(a)
+    for x in addrs_rgb:
+        full_data_rgb.append(x)
+
+full_data_seg = []
+for i in addrs:
+    a = i+'/SemSeg/*.png'
+    addrs_seg = glob.glob(a)
+    for x in addrs_seg:
+        full_data_seg.append(x)
+
+# tamanos de imagen
+sia = 192
+sib = 320
+sta = 46
+stb = 78
+
+full_data_depth.sort()
+print(len(full_data_depth))
+
+full_data_rgb.sort()
+print(len(full_data_rgb))
+
+full_data_seg.sort()
+print(len(full_data_seg))
+
+if shuffle_data:
+    d = list(zip(full_data_rgb, full_data_seg, full_data_depth))
+    shuffle(d)
+    full_data_rgb, full_data_seg, full_data_depth = zip(*d)
+
+train_addrscolor = full_data_rgb[0:int(1 * len(full_data_rgb))]
+train_addrslabels = full_data_seg[0:int(1 * len(full_data_seg))]
+train_addrsdepth = full_data_depth[0:int(1 * len(full_data_depth))]
+
+nclases = 14
+
+
+def one_hot_it(labels):
+    x = np.zeros((sia, sib, nclases))
+    for i in range(sia):
+        for j in range(sib):
+            x[i, j, labels[i][j]] = 1
+    return x
+
+
+"""
+Labels
+
+Label	-> Name		->   RGB
+---------------------
+        0	-> Void		->   0,0,0
+        1	-> Road		->   128,64,128
+        2	-> Sidewalk	->   244,35,232
+        3	-> Building	->   70,70,70
+        4	-> Wall		->   102,102,156
+        5	-> Fence	->   190,153,153
+        6	-> Pole		->   153,153,153
+        7	-> Traffic Light->   250,170,30
+        8	-> Traffic Sign	->   220,220,0
+        9	-> Vegetation	->   107,142,35
+        10	-> Terrain	->   152,251,152
+        11	-> Sky		->   70,130,180
+        12	-> Person	->   220,20,60
+        13	-> Rider	->   255,0,0
+        14	-> Car		->   0,0,142
+        15	-> Truck	->   0,0,70
+        16	-> Bus		->   0,60,100
+        17	-> Train	->   0,80,100
+        18	-> Motorcycle	->   0,0,230
+        19	-> Bicycle	->   119,11,32
+        20	-> Road Lines	->   157.234,50
+        21	-> Other	->   72,0,98
+        22	-> Road Works	->   167,106,29
+"""
+
+
+def procesar_etiquetas(ruta_imagen, ruta_rgb):
+    labelt = cv2.imread(ruta_imagen, cv2.IMREAD_UNCHANGED)
+    labelt= cv2.resize(labelt, (sib, sia))
+    labelt = labelt.astype('int')
+    auxtc = np.zeros((sia, sib, 1), 'int')
+    auxtc[:, :, 0] = labelt[:, :, 2]
+    labeln = np.zeros((sia, sib))
+    for l in range(labelt.shape[0]):
+        for j in range(labelt.shape[1]):
+            #void
+            if auxtc[l, j, 0] == 21:
+                labeln[l, j] = 0
+
+            elif auxtc[l, j, 0] == 22:
+                labeln[l, j] = 0
+
+            elif auxtc[l, j, 0] > 20:
+                labeln[l, j] = 0
+
+            #sky
+            elif auxtc[l, j, 0] == 11:
+                labeln[l, j] = 1
+
+            #building
+            elif auxtc[l, j, 0] == 3:
+                labeln[l, j] = 2
+
+            elif auxtc[l, j, 0] == 4:
+                labeln[l, j] = 2
+
+            #road
+            elif auxtc[l, j, 0] == 1:
+                labeln[l, j] = 3
+            elif auxtc[l, j, 0] == 10:
+                labeln[l, j] = 3
+
+            #sidewalk
+            elif auxtc[l, j, 0] == 2:
+                labeln[l, j] = 4
+
+            #fence
+            elif auxtc[l, j, 0] == 5:
+                labeln[l, j] = 5
+
+            #vegetation
+            elif auxtc[l, j, 0] == 9:
+                labeln[l, j] = 6
+
+            #pole
+            elif auxtc[l, j, 0] == 6:
+                labeln[l, j] = 7
+
+            #vehicle
+            elif auxtc[l, j, 0] == 14:
+                labeln[l, j] = 8
+            elif auxtc[l, j, 0] == 15:
+                labeln[l, j] = 8
+            elif auxtc[l, j, 0] == 16:
+                labeln[l, j] = 8
+            elif auxtc[l, j, 0] == 17:
+                labeln[l, j] = 8
+
+            #sign
+            elif auxtc[l, j, 0] == 8:
+                labeln[l, j] = 9
+
+            #pedestrian
+            elif auxtc[l, j, 0] == 12:
+                labeln[l, j] = 10
+
+            #cyclist
+            elif auxtc[l, j, 0] == 13:
+                labeln[l, j] = 11
+            elif auxtc[l, j, 0] == 18:
+                labeln[l, j] = 11
+            elif auxtc[l, j, 0] == 19:
+                labeln[l, j] = 11
+
+            #lanemrk
+            elif auxtc[l, j, 0] == 20:
+                labeln[l, j] = 12
+
+            #trafficlight
+            elif auxtc[l, j, 0] == 7:
+                labeln[l, j] = 13
+
+            else:
+                labeln[l, j] = labeln[l, j]
+
+    labeln = labeln.astype('int')
+    test = one_hot_it(labeln)
+    imgd = Image.open(ruta_rgb)  # Replace with your image name here
+    imgd = np.array(imgd)
+    imgd = cv2.resize(imgd, (sib, sia))
+    max_val = float(np.iinfo(imgd.dtype).max)
+    imgd = imgd/max_val
+    imgd = imgd.astype('float32')
+    auxd = np.zeros((nclases+3, sia, sib, 1), np.float32)
+    auxd[0, :, :, 0] = imgd[:, :, 0]
+    auxd[1, :, :, 0] = imgd[:, :, 1]
+    auxd[2, :, :, 0] = imgd[:, :, 2]
+    for i in range(0, nclases):
+        auxd[3+i, :, :, 0] = test[:, :, i]
+    #cv2.imshow('test1', auxd[0, :, :, :])
+    #cv2.imshow('test2', auxd[1, :, :, :])
+    #cv2.imshow('test3', auxd[2, :, :, :])
+    #cv2.imshow('test4', auxd[3, :, :, :])
+    #cv2.waitKey(0)
+    onehot = np.transpose(auxd, (3, 0, 1, 2))
+    return onehot
+
+
+def procesar_deph(ruta_depth):
+    imgdc = cv2.imread(ruta_depth, cv2.IMREAD_UNCHANGED)
+    depth = 5000 * ((imgdc[:, :, 1] + imgdc[:, :, 0] * 256 + imgdc[:, :, 2] * 256 * 256) / float(256*256*256 - 1))
+    imgdc = cv2.resize(depth, (stb, sta))
+    imgdc[imgdc > 1] = 1
+    imgdc  = 1 - imgdc
+    auxdc = np.zeros((1, sta, stb, 1), np.float32)
+    auxdc[0, :, :, 0] = imgdc[:, :]
+    auxdc = np.transpose(auxdc, (3, 0, 1, 2))
+    return auxdc
+
+
+def generator(image_file_list, labels_file_list, depth_list, batch_size):
+    i = 0
+    while True:
+        batch = {'images': [], 'labels': []}  # use a dict for multiple inputs
+        for b in range(batch_size):
+            if i == len(image_file_list):
+                i = 0
+            sample = image_file_list[i]
+            sample1 = depth_list[i]
+            sample2 = labels_file_list[i]
+            image_file_path = sample
+            image_file_path1 = sample1
+            image_file_path2 = sample2
+            i += 1
+            image = procesar_etiquetas(image_file_path2, image_file_path)
+            labels = procesar_deph(image_file_path1)
+            batch['images'].append(image)
+            batch['labels'].append(labels)
+        batch['images'] = np.array(batch['images'])
+        batch['labels'] = np.array(batch['labels'])
+        yield batch['images'], batch['labels']
+
+
+data_format = 'channels_first'
+
+input_height = 192
+input_width = 320
+nClasses = 14
+
+
+def l2_loss(y_true, y_pred):
+    alpha = 0.001
+    loss = (K.sum((y_pred-y_true)**2)/2)*alpha
+    return loss
+
+
+def residual_block(y, nb_channels_out):
+    shortcut = y
+    in_channel = K.shape(y)[1]
+    y = layers.Activation('relu')(y)
+    y = layers.Conv2D(nb_channels_out, kernel_size=(3, 3), use_bias=True,
+                      strides=(1, 1), padding='same', data_format=data_format)(y)
+    y = layers.BatchNormalization()(y)
+    y = layers.Activation('relu')(y)
+    y = layers.Conv2D(nb_channels_out, kernel_size=(3, 3), use_bias=True,
+                      strides=(1, 1), padding='same', data_format=data_format)(y)
+    y = layers.BatchNormalization()(y)
+    if in_channel != nb_channels_out:
+        shortcut = layers.Conv2D(nb_channels_out, kernel_size=(1, 1), use_bias=True,
+                                     strides=(1, 1), padding='same', data_format=data_format)(shortcut)
+        shortcut = layers.BatchNormalization()(shortcut)
+        in_channel = nb_channels_out
+    y = layers.add([shortcut, y])
+    y = layers.Activation('relu')(y)
+    return y
+
+
+# CNN
+entrada = Input(shape=(1, 3+nclases, 192, 320))
+x2 = Conv3D(64, 3, bias=True, strides=(1, 1, 1), activation='relu', padding='same', data_format=data_format)(entrada)
+x2 = Conv3D(64, 3, bias=True, strides=(1, 1, 1), activation='relu', padding='same', data_format=data_format)(x2)
+x2 = BatchNormalization()(x2)
+x2 = MaxPooling3D(pool_size=(2, 2, 2))(x2)
+x2 = Conv3D(64, 3, bias=True, strides=(1, 1, 1), activation='relu', padding='same', data_format=data_format)(x2)
+x2 = Conv3D(64, 3, bias=True, strides=(1, 1, 1), activation='relu', padding='same', data_format=data_format)(x2)
+x2 = BatchNormalization()(x2)
+x2 = MaxPooling3D(pool_size=(2, 2, 2))(x2)
+x2 = Conv3D(128, 3, bias=True, strides=(1, 1, 1), activation='relu', padding='same', data_format=data_format)(x2)
+x2 = Conv3D(128, 3, bias=True, strides=(1, 1, 1), activation='relu', padding='same', data_format=data_format)(x2)
+x2 = Conv3D(1, 3, bias=True, activation='sigmoid', data_format=data_format)(x2)
+x2 = MaxPooling3D(pool_size=(2, 1, 1))(x2)
+
+model = Model(inputs=entrada, outputs=x2)
+model = multi_gpu_model(model, gpus=2)
+model.compile(loss=l2_loss, optimizer=keras.optimizers.SGD(lr=0.001))
+model.summary()
+plot_model(model, to_file='model.png', show_shapes=True)
+
+
+def data_statistic(train_dataset):
+    len(train_dataset)
+    return len(train_dataset)
+
+
+batch_size = 15
+train_generator = generator(train_addrscolor, train_addrslabels, train_addrsdepth, batch_size)
+nb_train_samples = data_statistic(train_addrscolor)
+print('train samples: %d' % nb_train_samples)
+
+model.fit_generator(epochs=30, generator=train_generator, steps_per_epoch=nb_train_samples // batch_size)
+
+model_json = model.to_json()
+with open('modeld4c.json', 'w') as json_file:
+    json_file.write(model_json)
+model.save_weights('RNAd4c.h5')
+
+
